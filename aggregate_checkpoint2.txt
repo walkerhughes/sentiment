@@ -1,0 +1,62 @@
+db.news_sentiment.aggregate([
+  {
+    $match: {
+      ticker: { $in: ["AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "META", "GOOGL"] }
+    }
+  },
+  {
+    $group: {
+      _id: "$ticker",
+      avg_news_sentiment: { $avg: "$overall_sentiment_score" }
+    }
+  },
+  {
+    $merge: {
+      into: "ticker_news_sentiment",
+      whenMatched: "replace",
+      whenNotMatched: "insert"
+    }
+  }
+]);
+db.news_sentiment.aggregate([
+  {
+    $match: {
+      ticker: { $in: ["AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "META", "GOOGL"] }
+    }
+  },
+  { $unwind: "$topics" },
+  {
+    $group: {
+      _id: { ticker: "$ticker", topic: "$topics.topic" },
+      avg_relevance: { $avg: "$topics.relevance_score" },
+      mention_count: { $sum: 1 }
+    }
+  },
+  { $sort: { mention_count: -1, avg_relevance: -1 } },
+  {
+    $group: {
+      _id: "$_id.ticker",
+      top_topics: {
+        $push: {
+          topic: "$_id.topic",
+          avg_relevance: "$avg_relevance",
+          mention_count: "$mention_count"
+        }
+      }
+    }
+  },
+  {
+    $project: {
+      ticker: "$_id",
+      top_topics: { $slice: ["$top_topics", 3] },
+      _id: 0
+    }
+  },
+  {
+    $merge: {
+      into: "ticker_top_topics",
+      whenMatched: "replace",
+      whenNotMatched: "insert"
+    }
+  }
+]);
