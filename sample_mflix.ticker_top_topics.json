@@ -1,0 +1,92 @@
+[{
+  "_id": {
+    "$oid": "67b7d40dd86ae1799aa5fc81"
+  },
+  "ticker": "AMZN",
+  "top_topics": [
+    {
+      "topic": "Retail & Wholesale",
+      "avg_relevance": null,
+      "mention_count": 683
+    },
+    {
+      "topic": "Financial Markets",
+      "avg_relevance": null,
+      "mention_count": 619
+    },
+    {
+      "topic": "Earnings",
+      "avg_relevance": null,
+      "mention_count": 541
+    }
+  ]
+},
+{
+  "_id": {
+    "$oid": "67b7d40dd86ae1799aa5fc82"
+  },
+  "ticker": "NVDA",
+  "top_topics": [
+    {
+      "topic": "Manufacturing",
+      "avg_relevance": null,
+      "mention_count": 690
+    },
+    {
+      "topic": "Financial Markets",
+      "avg_relevance": null,
+      "mention_count": 606
+    },
+    {
+      "topic": "Earnings",
+      "avg_relevance": null,
+      "mention_count": 461
+    }
+  ]
+},
+{
+  "_id": {
+    "$oid": "67b7d40dd86ae1799aa5fc83"
+  },
+  "ticker": "AAPL",
+  "top_topics": [
+    {
+      "topic": "Technology",
+      "avg_relevance": null,
+      "mention_count": 670
+    },
+    {
+      "topic": "Financial Markets",
+      "avg_relevance": null,
+      "mention_count": 569
+    },
+    {
+      "topic": "Earnings",
+      "avg_relevance": null,
+      "mention_count": 413
+    }
+  ]
+},
+{
+  "_id": {
+    "$oid": "67b7d40dd86ae1799aa5fc84"
+  },
+  "ticker": "MSFT",
+  "top_topics": [
+    {
+      "topic": "Technology",
+      "avg_relevance": null,
+      "mention_count": 682
+    },
+    {
+      "topic": "Financial Markets",
+      "avg_relevance": null,
+      "mention_count": 575
+    },
+    {
+      "topic": "Earnings",
+      "avg_relevance": null,
+      "mention_count": 420
+    }
+  ]
+}]

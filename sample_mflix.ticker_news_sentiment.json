@@ -1,0 +1,16 @@
+[{
+  "_id": "NVDA",
+  "avg_news_sentiment": 0.19077015942028983
+},
+{
+  "_id": "AMZN",
+  "avg_news_sentiment": 0.24184212298682284
+},
+{
+  "_id": "AAPL",
+  "avg_news_sentiment": 0.1978985358208955
+},
+{
+  "_id": "MSFT",
+  "avg_news_sentiment": 0.21950340469208213
+}]
