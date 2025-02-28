@@ -5,12 +5,14 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.providers.google.cloud.operators.dataproc import DataprocCreateClusterOperator
 from airflow.providers.google.cloud.operators.dataproc import DataprocSubmitJobOperator
 from airflow.providers.google.cloud.operators.dataproc import DataprocDeleteClusterOperator
-from airflow.providers.google.cloud.transfers.gcs_to_mongodb import GCSToMongoDBOperator
 from google.cloud import storage
 import requests
 import json
 import googleapiclient.discovery
 from pymongo import MongoClient
+from airflow.providers.google.cloud.hooks.gcs import GCSHook
+from airflow.providers.mongo.hooks.mongo import MongoHook
+from custom_operators import CustomGCSToMongoDBOperator
 
 # Environment variables
 ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
@@ -62,6 +64,29 @@ def fetch_alphavantage_data(**context):
     
     return all_results
 
+# Helper function for fetching YouTube comments
+def get_video_comments(youtube, video_id, max_results=100):
+    comments = []
+    
+    try:
+        # Get video comments
+        results = youtube.commentThreads().list(
+            part="snippet",
+            videoId=video_id,
+            textFormat="plainText",
+            maxResults=max_results
+        ).execute()
+        
+        # Process comments
+        for item in results.get("items", []):
+            comment = item["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
+            comments.append(comment)
+            
+        return comments
+    except Exception as e:
+        print(f"Error fetching comments for video {video_id}: {str(e)}")
+        return []
+
 # Step 2: Get YouTube Data
 def fetch_youtube_data(**context):
     alphavantage_data = context['task_instance'].xcom_pull(task_ids='fetch_alphavantage')
@@ -102,6 +127,24 @@ def upload_to_gcs(**context):
     # Upload YouTube data
     youtube_blob = bucket.blob(f'raw/youtube/data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
     youtube_blob.upload_from_string(json.dumps(youtube_data))
+
+# Add this function to your DAG file
+def transfer_gcs_to_mongodb(**context):
+    # Get data from GCS
+    gcs_hook = GCSHook()
+    bucket = context['gcs_bucket']
+    object_name = context['gcs_object']
+    data_string = gcs_hook.download(bucket_name=bucket, object_name=object_name)
+    data = json.loads(data_string)
+    
+    # Upload to MongoDB
+    mongo_hook = MongoHook(conn_id='mongo_default')
+    mongo_hook.insert_many(
+        mongo_collection=context['mongo_collection'],
+        mongo_db=context['mongo_db'],
+        docs=data
+    )
+    return f"Transferred {len(data)} documents to MongoDB"
 
 # Create DAG
 dag = DAG(
@@ -165,12 +208,11 @@ delete_cluster = DataprocDeleteClusterOperator(
     dag=dag
 )
 
-# Load to MongoDB
-load_to_mongodb = GCSToMongoDBOperator(
+# Replace the GCSToMongoDBOperator with PythonOperator
+load_to_mongodb = CustomGCSToMongoDBOperator(
     task_id='load_to_mongodb',
     gcs_bucket=GCS_BUCKET,
     gcs_object=f'processed/sentiment_results_{datetime.now().strftime("%Y%m%d")}.json',
-    mongo_uri=MONGO_CONNECTION_STRING,
     mongo_db='financial_sentiment',
     mongo_collection='sentiment_results',
     dag=dag
