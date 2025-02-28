@@ -4,6 +4,7 @@ import json
 from dotenv import load_dotenv
 import time
 from datetime import datetime
+from google.cloud import storage
 
 # Load environment variables
 load_dotenv(dotenv_path='/User/bensunshine/repos/msds697/project/.env')
@@ -53,22 +54,14 @@ with open(filename, 'w') as f:
 
 print(f"Data saved to {filename}")
 
-"""
-# Example code for uploading to GCS (you'll need to implement this)
-from google.cloud import storage
 
 def upload_to_gcs(bucket_name, source_file_name, destination_blob_name):
-    storage_client = storage.Client()
+    storage_client = storage.Client.from_service_account_json('google_service_account_key.json')
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(destination_blob_name)
     blob.upload_from_filename(source_file_name)
 
-# Example code for uploading to MongoDB (you'll need to implement this)
-from pymongo import MongoClient
-
-def upload_to_mongodb(data, connection_string, db_name, collection_name):
-    client = MongoClient(connection_string)
-    db = client[db_name]
-    collection = db[collection_name]
-    collection.insert_many(data)
-"""
+# Upload to GCS
+bucket_name = 'alphaverse_news'
+destination_blob_name = f'{filename}'
+upload_to_gcs(bucket_name, filename, destination_blob_name)
