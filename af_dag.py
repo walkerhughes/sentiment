@@ -124,9 +124,9 @@ def get_video_comments(video_id, max_results=100):
     return comments
 
 def get_yt_comments_for_all_tickers(
-    tickers: list[str] = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOG/GOOGL", "META", "TSLA"],
-    max_video_results: int = 35,
-    max_comments: int = 100
+    tickers: list[str] = ["AAPL"],
+    max_video_results: int = 2,
+    max_comments: int = 2
 ) -> list[dict]:
     
     parsed_video_data = []
