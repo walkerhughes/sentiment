@@ -14,14 +14,19 @@ from pymongo import MongoClient
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.providers.mongo.hooks.mongo import MongoHook
 from custom_operators import CustomGCSToMongoDBOperator
+from google.oauth2 import service_account
+import ssl
 
 # Environment variables
-ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
-YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
-GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID')
-GCS_BUCKET = os.getenv('GCS_BUCKET')
-MONGO_CONNECTION_STRING = os.getenv('MONGO_CONNECTION_STRING')
+ALPHA_VANTAGE_API_KEY = 'OU4IFG8WTEFGTA2T'
+YOUTUBE_API_KEY = 'AIzaSyA0bEZKUKJ3yhW8hiRnD9FaYTMENc'
+YOUTUBE_API_KEY = 'AIzaSyAYWOqVU0OL2j4iRGT382IyWDwdActKgu4'
+GCP_PROJECT_ID = 'round-music-450621-b5'
+GCS_BUCKET = 'alphaverse_news'
+MONGO_CONNECTION_STRING = 'mongodb+srv://racisneros:Gq5bz7rZiBKdWDTM@group.pj9wa.mongodb.net/?retryWrites=true&w=majority&appName=group'
+SERVICE_ACCOUNT_PATH = os.path.expanduser('~/Downloads/google_service_account_key.json')
 
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 # Default DAG arguments
 default_args = {
     'owner': 'airflow',
@@ -37,9 +42,9 @@ default_args = {
 def fetch_alphavantage_data(**context):
     tickers = ['AAPL', 'NVDA', 'MSFT', 'AMZN', 'GOOG', 'META', 'TSLA']
     size = 1000
-    max_date_time = '20220101T0001'
+    max_date_time = datetime.now().strftime("%Y%m%dT0001")
     all_results = []
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = TIMESTAMP
     
     for ticker in tickers:
         url = f'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&time_from={max_date_time}&limit={size}&apikey={ALPHA_VANTAGE_API_KEY}'
@@ -67,7 +72,7 @@ def fetch_alphavantage_data(**context):
 
 def youtube_search(query, max_results=10):
 
-    youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=API_KEY)
+    youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
     
     # Call the search.list method to retrieve results matching the query
     request = youtube.search().list(
@@ -92,7 +97,7 @@ def youtube_search(query, max_results=10):
 
 
 def get_video_comments(video_id, max_results=100):
-    youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=API_KEY)
+    youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
     comments = []
     next_page_token = None
@@ -124,10 +129,10 @@ def get_video_comments(video_id, max_results=100):
     return comments
 
 def get_yt_comments_for_all_tickers(
-    tickers: list[str] = ["AAPL"],
-    max_video_results: int = 2,
-    max_comments: int = 2
-) -> list[dict]:
+    tickers = ["AAPL", 'NVDA', 'MSFT', 'AMZN', 'GOOG', 'META', 'TSLA'],
+    max_video_results: int = 30,
+    max_comments: int = 100
+):
     
     parsed_video_data = []
     search_template = """latest news for {ticker} stock"""
@@ -151,39 +156,219 @@ def get_yt_comments_for_all_tickers(
     
     return parsed_video_data
 
-# Step 3: Upload to GCS
+
 def upload_to_gcs(**context):
     alphavantage_data = context['task_instance'].xcom_pull(task_ids='fetch_alphavantage')
     youtube_data = context['task_instance'].xcom_pull(task_ids='fetch_youtube')
     
-    storage_client = storage.Client()
+    timestamp = TIMESTAMP  # Get current timestamp
+    
+    credentials = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_PATH
+    )
+    
+    storage_client = storage.Client(
+        credentials=credentials, 
+        project=GCP_PROJECT_ID
+    )
     bucket = storage_client.bucket(GCS_BUCKET)
     
     # Upload Alphavantage data
-    alpha_blob = bucket.blob(f'raw/alphavantage/data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
+    alpha_blob = bucket.blob(f'raw/alphavantage/data_{timestamp}.json')
     alpha_blob.upload_from_string(json.dumps(alphavantage_data))
     
     # Upload YouTube data
-    youtube_blob = bucket.blob(f'raw/youtube/data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
+    youtube_blob = bucket.blob(f'raw/youtube/data_{timestamp}.json')
     youtube_blob.upload_from_string(json.dumps(youtube_data))
-
-# Add this function to your DAG file
-def transfer_gcs_to_mongodb(**context):
-    # Get data from GCS
-    gcs_hook = GCSHook()
-    bucket = context['gcs_bucket']
-    object_name = context['gcs_object']
-    data_string = gcs_hook.download(bucket_name=bucket, object_name=object_name)
-    data = json.loads(data_string)
     
-    # Upload to MongoDB
-    mongo_hook = MongoHook(conn_id='mongo_default')
-    mongo_hook.insert_many(
-        mongo_collection=context['mongo_collection'],
-        mongo_db=context['mongo_db'],
-        docs=data
+    return timestamp  # Return the timestamp used
+
+
+
+# Modified to accept timestamp from upload_to_gcs
+def load_raw_data_to_mongodb(**context):
+    timestamp = context['task_instance'].xcom_pull(task_ids='upload_to_gcs')
+    
+    # Get credentials and create storage client
+    credentials = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_PATH
     )
-    return f"Transferred {len(data)} documents to MongoDB"
+    
+    storage_client = storage.Client(
+        credentials=credentials, 
+        project=GCP_PROJECT_ID
+    )
+    bucket = storage_client.bucket(GCS_BUCKET)
+
+    prefix_alpha = f'raw/alphavantage/data_{timestamp}'
+    prefix_youtube = f'raw/youtube/data_{timestamp}'
+    
+    alpha_blobs = list(bucket.list_blobs(prefix=prefix_alpha))
+    youtube_blobs = list(bucket.list_blobs(prefix=prefix_youtube))
+    # youtube_blobs = list(bucket.list_blobs(prefix='raw/youtube/data_20250305_104643'))
+    
+    # MongoDB connection setup
+    connection_string = MONGO_CONNECTION_STRING
+    if '?' in connection_string:
+        connection_string += '&tlsAllowInvalidCertificates=true'
+    else:
+        connection_string += '?tlsAllowInvalidCertificates=true'
+    
+    print(f"Connecting to MongoDB with: {connection_string}")
+    
+    # Create client with connection string
+    client = MongoClient(connection_string, 
+                         connectTimeoutMS=30000,
+                         socketTimeoutMS=30000,
+                         serverSelectionTimeoutMS=30000)
+    
+    # Test the connection first
+    try:
+        client.admin.command('ping')
+        print("MongoDB connection successful!")
+    except Exception as e:
+        print(f"MongoDB connection failed: {str(e)}")
+        raise
+    
+    db = client['financial_sentiment']
+    articles_collection = db['raw_articles']
+    yt_comments_collection = db['raw_yt_comments']
+    
+    results = []
+    
+    # Process Alphavantage data (articles)
+    if alpha_blobs:
+        latest_alpha_blob = sorted(alpha_blobs, key=lambda x: x.name, reverse=True)[0]
+        alpha_data_string = latest_alpha_blob.download_as_text()
+        alpha_data = json.loads(alpha_data_string)
+        
+        # Insert the article data
+        if isinstance(alpha_data, list):
+            if alpha_data:
+                articles_collection.insert_many(alpha_data)
+                results.append(f"Loaded {len(alpha_data)} articles to MongoDB")
+            else:
+                results.append("No article data to insert (empty list)")
+        else:
+            articles_collection.insert_one(alpha_data)
+            results.append("Loaded 1 article to MongoDB")
+    else:
+        results.append(f"No files found with prefix: {prefix_alpha}")
+    
+    # Process YouTube data (comments)
+    if youtube_blobs:
+        latest_youtube_blob = sorted(youtube_blobs, key=lambda x: x.name, reverse=True)[0]
+        youtube_data_string = latest_youtube_blob.download_as_text()
+        youtube_data = json.loads(youtube_data_string)
+        
+        # Insert the YouTube comment data
+        if isinstance(youtube_data, list):
+            if youtube_data:
+                yt_comments_collection.insert_many(youtube_data)
+                results.append(f"Loaded {len(youtube_data)} YouTube comments to MongoDB")
+            else:
+                results.append("No YouTube comment data to insert (empty list)")
+        else:
+            yt_comments_collection.insert_one(youtube_data)
+            results.append("Loaded 1 YouTube comment to MongoDB")
+    else:
+        results.append(f"No files found with prefix: {prefix_youtube}")
+    
+    return "\n".join(results)
+
+# Add this function to run MongoDB aggregations
+def run_mongodb_aggregations(**context):
+    # Connect to MongoDB with the same connection parameters
+    connection_string = MONGO_CONNECTION_STRING
+    if '?' in connection_string:
+        connection_string += '&tlsAllowInvalidCertificates=true'
+    else:
+        connection_string += '?tlsAllowInvalidCertificates=true'
+    
+    client = MongoClient(connection_string, 
+                         connectTimeoutMS=30000,
+                         socketTimeoutMS=30000,
+                         serverSelectionTimeoutMS=30000)
+    
+    db = client['financial_sentiment']
+    
+    # Aggregation 1: Top topics by ticker
+    print("Running aggregation for top topics by ticker...")
+    try:
+        result1 = db.raw_articles.aggregate([
+            { "$match": { "ticker": { "$in": ["AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "META", "GOOGL"] } } },
+            { "$unwind": "$topics" },
+            { "$group": { 
+                "_id": { "ticker": "$ticker", "topic": "$topics.topic" },
+                "avg_relevance": { "$avg": { "$toDouble": "$topics.relevance_score" } },
+                "mention_count": { "$sum": 1 }
+            }},
+            { "$sort": { "mention_count": -1, "avg_relevance": -1 } },
+            { "$group": {
+                "_id": "$_id.ticker",
+                "top_topics": { 
+                    "$push": { 
+                        "topic": "$_id.topic", 
+                        "avg_relevance": "$avg_relevance", 
+                        "mention_count": "$mention_count" 
+                    }
+                }
+            }},
+            { "$project": { 
+                "ticker": "$_id",
+                "top_topics": { "$slice": ["$top_topics", 3] },
+                "_id": 0
+            }},
+            { "$merge": { "into": "ticker_top_topics", "whenMatched": "replace", "whenNotMatched": "insert" } }
+        ])
+        print("Top topics aggregation completed successfully")
+    except Exception as e:
+        print(f"Error running top topics aggregation: {str(e)}")
+    
+    # Aggregation 2: Average news sentiment by ticker
+    print("Running aggregation for average news sentiment by ticker...")
+    try:
+        result2 = db.raw_articles.aggregate([
+            { "$match": { "ticker": { "$in": ["AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "META", "GOOGL"] } } },
+            { "$group": {
+                "_id": "$ticker",
+                "avg_news_sentiment": { "$avg": { "$toDouble": "$overall_sentiment_score" } }
+            }},
+            { "$merge": { "into": "ticker_news_sentiment", "whenMatched": "replace", "whenNotMatched": "insert" } }
+        ])
+        print("Average news sentiment aggregation completed successfully")
+    except Exception as e:
+        print(f"Error running average news sentiment aggregation: {str(e)}")
+    
+    # Aggregation 3: Compare Alpha Vantage sentiment with our NLP sentiment
+    print("Running aggregation to compare sentiment sources...")
+    try:
+        result3 = db.raw_articles.aggregate([
+            { "$match": { "nlp_sentiment": { "$exists": true } } },
+            { "$project": {
+                "ticker": 1,
+                "title": 1,
+                "alpha_sentiment": "$overall_sentiment_score",
+                "vader_sentiment": "$nlp_sentiment.vader.compound",
+                "textblob_sentiment": "$nlp_sentiment.textblob.polarity",
+                "sentiment_difference": { 
+                    "$abs": { 
+                        "$subtract": [
+                            { "$toDouble": "$overall_sentiment_score" }, 
+                            "$nlp_sentiment.vader.compound"
+                        ]
+                    }
+                }
+            }},
+            { "$sort": { "sentiment_difference": -1 } },
+            { "$limit": 20 },
+            { "$merge": { "into": "sentiment_comparison", "whenMatched": "replace", "whenNotMatched": "insert" } }
+        ])
+        print("Sentiment comparison aggregation completed successfully")
+    except Exception as e:
+        print(f"Error running sentiment comparison aggregation: {str(e)}")
+    
+    return "MongoDB aggregations completed"
 
 # Create DAG
 dag = DAG(
@@ -203,7 +388,7 @@ task_fetch_alphavantage = PythonOperator(
 
 task_fetch_youtube = PythonOperator(
     task_id='fetch_youtube',
-    python_callable=fetch_youtube_data,
+    python_callable=get_yt_comments_for_all_tickers,
     dag=dag
 )
 
@@ -213,7 +398,11 @@ task_upload_to_gcs = PythonOperator(
     dag=dag
 )
 
-# Create Dataproc cluster
+# Update your task dependencies
+# task_fetch_alphavantage >> task_fetch_youtube >> task_upload_to_gcs >> create_cluster >> submit_job >> task_sentiment_analysis >> delete_cluster >> load_to_mongodb
+
+# Comment out the Create Dataproc cluster task
+'''
 create_cluster = DataprocCreateClusterOperator(
     task_id='create_cluster',
     project_id=GCP_PROJECT_ID,
@@ -222,8 +411,10 @@ create_cluster = DataprocCreateClusterOperator(
     region='us-central1',
     dag=dag
 )
+'''
 
-# Submit Sentiment Analysis job
+# Comment out the Submit Sentiment Analysis job task
+'''
 SENTIMENT_ANALYSIS_JOB = {
     'pyspark_job': {
         'main_python_file_uri': f'gs://{GCS_BUCKET}/scripts/sentiment_analysis.py'
@@ -237,8 +428,10 @@ submit_job = DataprocSubmitJobOperator(
     job=SENTIMENT_ANALYSIS_JOB,
     dag=dag
 )
+'''
 
-# Delete cluster
+# Comment out the Delete cluster task
+'''
 delete_cluster = DataprocDeleteClusterOperator(
     task_id='delete_cluster',
     project_id=GCP_PROJECT_ID,
@@ -246,16 +439,23 @@ delete_cluster = DataprocDeleteClusterOperator(
     region='us-central1',
     dag=dag
 )
+'''
 
-# Replace the GCSToMongoDBOperator with PythonOperator
-load_to_mongodb = CustomGCSToMongoDBOperator(
+# Replace the CustomGCSToMongoDBOperator with PythonOperator
+load_to_mongodb = PythonOperator(
     task_id='load_to_mongodb',
-    gcs_bucket=GCS_BUCKET,
-    gcs_object=f'processed/sentiment_results_{datetime.now().strftime("%Y%m%d")}.json',
-    mongo_db='financial_sentiment',
-    mongo_collection='sentiment_results',
+    python_callable=load_raw_data_to_mongodb,
+    dag=dag
+)
+
+# Add the aggregation task
+mongodb_aggregations = PythonOperator(
+    task_id='mongodb_aggregations',
+    python_callable=run_mongodb_aggregations,
     dag=dag
 )
 
 # Set task dependencies
-task_fetch_alphavantage >> task_fetch_youtube >> task_upload_to_gcs >> create_cluster >> submit_job >> delete_cluster >> load_to_mongodb
+
+# task_fetch_alphavantage >> task_fetch_youtube >> task_upload_to_gcs >> load_to_mongodb #>> mongodb_aggregations
+task_fetch_youtube >> task_upload_to_gcs >> load_to_mongodb
