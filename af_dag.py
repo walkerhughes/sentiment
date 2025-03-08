@@ -17,11 +17,25 @@ from custom_operators import CustomGCSToMongoDBOperator
 from google.oauth2 import service_account
 import ssl
 
+from transformers import pipeline
+
+sentiment_pipeline = pipeline("sentiment-analysis")
+
 # Environment variables
-ALPHA_VANTAGE_API_KEY = 'OU4IFG8WTEFGTA2T'
-YOUTUBE_API_KEY = 'AIzaSyA0bEZKUKJ3yhW8hiRnD9FaYTMENc'
-YOUTUBE_API_KEY = 'AIzaSyAYWOqVU0OL2j4iRGT382IyWDwdActKgu4'
+# ALPHA_VANTAGE_API_KEY = 'OU4IFG8WTEFGTA2T'
+# ALPHA_VANTAGE_API_KEY = 'E7BHX8V1IM7JXR3S'
+ALPHA_VANTAGE_API_KEY = os.environ.get('ALPHA_VANTAGE_API_KEY')
+
+# YOUTUBE_API_KEY = 'AIzaSyA0bEZKUKJ3yhW8hiRnD9FaYTMENc'
+# YOUTUBE_API_KEY = 'AIzaSyAYWOqVU0OL2j4iRGT382IyWDwdActKgu4'
+# YOUTUBE_API_KEY = 'AIzaSyCekPhJtGexYecVFMqaKSVyXcEbLx_xCB8'
+# YOUTUBE_API_KEY = 'AIzaSyAIK8JIxVbDgi5gTyD0eSZKrYul_44Q3G4'
+# vitoria
+# YOUTUBE_API_KEY = 'AIzaSyA0bEZKUKJ3yhW8hiRnD9FaYTMENc'
+YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY')
 GCP_PROJECT_ID = 'round-music-450621-b5'
+GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
+
 GCS_BUCKET = 'alphaverse_news'
 MONGO_CONNECTION_STRING = 'mongodb+srv://racisneros:Gq5bz7rZiBKdWDTM@group.pj9wa.mongodb.net/?retryWrites=true&w=majority&appName=group'
 SERVICE_ACCOUNT_PATH = os.path.expanduser('~/Downloads/google_service_account_key.json')
@@ -41,6 +55,8 @@ default_args = {
 # Step 1: Get Alphavantage Data
 def fetch_alphavantage_data(**context):
     tickers = ['AAPL', 'NVDA', 'MSFT', 'AMZN', 'GOOG', 'META', 'TSLA']
+
+
     size = 1000
     max_date_time = datetime.now().strftime("%Y%m%dT0001")
     all_results = []
@@ -71,9 +87,7 @@ def fetch_alphavantage_data(**context):
     return all_results
 
 def youtube_search(query, max_results=10):
-
     youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-    
     # Call the search.list method to retrieve results matching the query
     request = youtube.search().list(
         part="snippet",
@@ -82,7 +96,6 @@ def youtube_search(query, max_results=10):
         maxResults=max_results
     )
     response = request.execute()
-    
     # Extract video IDs, titles, and publication dates from the response
     videos = []
     for item in response.get("items", []):
@@ -92,16 +105,11 @@ def youtube_search(query, max_results=10):
             "published_at": item["snippet"]["publishedAt"]
         }
         videos.append(video_data)
-    
     return videos
-
-
 def get_video_comments(video_id, max_results=100):
     youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
     comments = []
     next_page_token = None
-
     while len(comments) < max_results:
         request = youtube.commentThreads().list(
             part="snippet",
@@ -111,41 +119,34 @@ def get_video_comments(video_id, max_results=100):
             pageToken=next_page_token
         )
         response = request.execute()
-
         for item in response.get("items", []):
             comment = item["snippet"]["topLevelComment"]["snippet"]
             comment_data = {
                 "author": comment["authorDisplayName"],
                 "text": comment["textDisplay"],
                 "likes": comment["likeCount"],
-                "published_at": comment["publishedAt"]
+                "published_at": comment["publishedAt"],
+                "sentiment_score": sentiment_pipeline(comment["textDisplay"])
             }
             comments.append(comment_data)
-
         next_page_token = response.get("nextPageToken")
         if not next_page_token:
             break
-
     return comments
-
 def get_yt_comments_for_all_tickers(
-    tickers = ["AAPL", 'NVDA', 'MSFT', 'AMZN', 'GOOG', 'META', 'TSLA'],
-    max_video_results: int = 30,
-    max_comments: int = 100
+    tickers = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOG", "META", "TSLA"],
+    max_video_results: int = 10,
+    max_comments: int = 50
 ):
-    
     parsed_video_data = []
     search_template = """latest news for {ticker} stock"""
-    
     for ticker in tickers:
         for ticker_data in youtube_search(
                 query=search_template.format(ticker=ticker),
                 max_results=max_video_results
             ):
-
             comments = get_video_comments(ticker_data["video_id"], max_results=max_comments)
             top_comments = heapq.nlargest(max_comments, comments, key=lambda item: item["likes"])
-            
             parsed_video_data.append({
                 "ticker": ticker,
                 "video_id": ticker_data["video_id"],
@@ -153,7 +154,6 @@ def get_yt_comments_for_all_tickers(
                 "published_at": ticker_data["published_at"],
                 "top_comments": top_comments
             })
-    
     return parsed_video_data
 
 
@@ -278,97 +278,7 @@ def load_raw_data_to_mongodb(**context):
 
 # Add this function to run MongoDB aggregations
 def run_mongodb_aggregations(**context):
-    # Connect to MongoDB with the same connection parameters
-    connection_string = MONGO_CONNECTION_STRING
-    if '?' in connection_string:
-        connection_string += '&tlsAllowInvalidCertificates=true'
-    else:
-        connection_string += '?tlsAllowInvalidCertificates=true'
-    
-    client = MongoClient(connection_string, 
-                         connectTimeoutMS=30000,
-                         socketTimeoutMS=30000,
-                         serverSelectionTimeoutMS=30000)
-    
-    db = client['financial_sentiment']
-    
-    # Aggregation 1: Top topics by ticker
-    print("Running aggregation for top topics by ticker...")
-    try:
-        result1 = db.raw_articles.aggregate([
-            { "$match": { "ticker": { "$in": ["AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "META", "GOOGL"] } } },
-            { "$unwind": "$topics" },
-            { "$group": { 
-                "_id": { "ticker": "$ticker", "topic": "$topics.topic" },
-                "avg_relevance": { "$avg": { "$toDouble": "$topics.relevance_score" } },
-                "mention_count": { "$sum": 1 }
-            }},
-            { "$sort": { "mention_count": -1, "avg_relevance": -1 } },
-            { "$group": {
-                "_id": "$_id.ticker",
-                "top_topics": { 
-                    "$push": { 
-                        "topic": "$_id.topic", 
-                        "avg_relevance": "$avg_relevance", 
-                        "mention_count": "$mention_count" 
-                    }
-                }
-            }},
-            { "$project": { 
-                "ticker": "$_id",
-                "top_topics": { "$slice": ["$top_topics", 3] },
-                "_id": 0
-            }},
-            { "$merge": { "into": "ticker_top_topics", "whenMatched": "replace", "whenNotMatched": "insert" } }
-        ])
-        print("Top topics aggregation completed successfully")
-    except Exception as e:
-        print(f"Error running top topics aggregation: {str(e)}")
-    
-    # Aggregation 2: Average news sentiment by ticker
-    print("Running aggregation for average news sentiment by ticker...")
-    try:
-        result2 = db.raw_articles.aggregate([
-            { "$match": { "ticker": { "$in": ["AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "META", "GOOGL"] } } },
-            { "$group": {
-                "_id": "$ticker",
-                "avg_news_sentiment": { "$avg": { "$toDouble": "$overall_sentiment_score" } }
-            }},
-            { "$merge": { "into": "ticker_news_sentiment", "whenMatched": "replace", "whenNotMatched": "insert" } }
-        ])
-        print("Average news sentiment aggregation completed successfully")
-    except Exception as e:
-        print(f"Error running average news sentiment aggregation: {str(e)}")
-    
-    # Aggregation 3: Compare Alpha Vantage sentiment with our NLP sentiment
-    print("Running aggregation to compare sentiment sources...")
-    try:
-        result3 = db.raw_articles.aggregate([
-            { "$match": { "nlp_sentiment": { "$exists": true } } },
-            { "$project": {
-                "ticker": 1,
-                "title": 1,
-                "alpha_sentiment": "$overall_sentiment_score",
-                "vader_sentiment": "$nlp_sentiment.vader.compound",
-                "textblob_sentiment": "$nlp_sentiment.textblob.polarity",
-                "sentiment_difference": { 
-                    "$abs": { 
-                        "$subtract": [
-                            { "$toDouble": "$overall_sentiment_score" }, 
-                            "$nlp_sentiment.vader.compound"
-                        ]
-                    }
-                }
-            }},
-            { "$sort": { "sentiment_difference": -1 } },
-            { "$limit": 20 },
-            { "$merge": { "into": "sentiment_comparison", "whenMatched": "replace", "whenNotMatched": "insert" } }
-        ])
-        print("Sentiment comparison aggregation completed successfully")
-    except Exception as e:
-        print(f"Error running sentiment comparison aggregation: {str(e)}")
-    
-    return "MongoDB aggregations completed"
+
 
 # Create DAG
 dag = DAG(
@@ -398,48 +308,7 @@ task_upload_to_gcs = PythonOperator(
     dag=dag
 )
 
-# Update your task dependencies
-# task_fetch_alphavantage >> task_fetch_youtube >> task_upload_to_gcs >> create_cluster >> submit_job >> task_sentiment_analysis >> delete_cluster >> load_to_mongodb
 
-# Comment out the Create Dataproc cluster task
-'''
-create_cluster = DataprocCreateClusterOperator(
-    task_id='create_cluster',
-    project_id=GCP_PROJECT_ID,
-    cluster_name='sentiment-cluster-{{ ds_nodash }}',
-    num_workers=2,
-    region='us-central1',
-    dag=dag
-)
-'''
-
-# Comment out the Submit Sentiment Analysis job task
-'''
-SENTIMENT_ANALYSIS_JOB = {
-    'pyspark_job': {
-        'main_python_file_uri': f'gs://{GCS_BUCKET}/scripts/sentiment_analysis.py'
-    }
-}
-
-submit_job = DataprocSubmitJobOperator(
-    task_id='submit_sentiment_job',
-    project_id=GCP_PROJECT_ID,
-    region='us-central1',
-    job=SENTIMENT_ANALYSIS_JOB,
-    dag=dag
-)
-'''
-
-# Comment out the Delete cluster task
-'''
-delete_cluster = DataprocDeleteClusterOperator(
-    task_id='delete_cluster',
-    project_id=GCP_PROJECT_ID,
-    cluster_name='sentiment-cluster-{{ ds_nodash }}',
-    region='us-central1',
-    dag=dag
-)
-'''
 
 # Replace the CustomGCSToMongoDBOperator with PythonOperator
 load_to_mongodb = PythonOperator(
@@ -456,6 +325,5 @@ mongodb_aggregations = PythonOperator(
 )
 
 # Set task dependencies
+task_fetch_alphavantage >> task_fetch_youtube >> task_upload_to_gcs >> load_to_mongodb >> mongodb_aggregations
 
-# task_fetch_alphavantage >> task_fetch_youtube >> task_upload_to_gcs >> load_to_mongodb #>> mongodb_aggregations
-task_fetch_youtube >> task_upload_to_gcs >> load_to_mongodb
